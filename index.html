@@ -3,13 +3,131 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Data Compiler</title>
-  <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:800px;margin:48px auto;padding:0 16px;color:#111}a{color:#0366d6}</style>
+  <title>Data Compiler — Branches Report</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:1000px;margin:32px auto;padding:0 16px;color:#111}
+    a{color:#0366d6}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{border:1px solid #e1e4e8;padding:8px;text-align:left}
+    th{background:#f6f8fa}
+    #status{margin-top:8px;color:#555}
+    button{background:#2ea44f;border:0;color:white;padding:8px 12px;border-radius:6px;cursor:pointer}
+    button:disabled{opacity:.6}
+    pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto}
+  </style>
 </head>
 <body>
-  <h1>Data Compiler</h1>
-  <p>This is a minimal landing page added to enable GitHub Pages for this repository.</p>
-  <p>To publish the site: go to <strong>Settings → Pages</strong>, set <strong>Source</strong> to <em>Branch: main</em> and <em>Folder: / (root)</em>, then click <strong>Save</strong>. Wait a minute for the site to become available at <code>https://ted-haile.github.io/data-compiler/</code>.</p>
-  <p>Repository: <a href="https://github.com/Ted-Haile/data-compiler">Ted-Haile/data-compiler</a></p>
+  <h1>Data Compiler — Branches Report</h1>
+  <p>This page fetches branches for the repository <strong>Ted-Haile/data-compiler</strong> using the GitHub API and shows a simplified report. If you plan to publish here via GitHub Pages, enable Pages in Settings → Pages (Branch: main, Folder: /).</p>
+
+  <div>
+    <button id="refresh">Refresh branches</button>
+    <button id="csv" disabled>Download CSV</button>
+    <span id="status">Idle</span>
+  </div>
+
+  <table id="branches" aria-live="polite">
+    <thead>
+      <tr>
+        <th>Branch</th>
+        <th>Latest Commit</th>
+        <th>Author</th>
+        <th>Date</th>
+        <th>Commit URL</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const owner = 'Ted-Haile';
+    const repo = 'data-compiler';
+    const apiBase = `https://api.github.com/repos/${owner}/${repo}`;
+
+    const statusEl = document.getElementById('status');
+    const tbody = document.querySelector('#branches tbody');
+    const refreshBtn = document.getElementById('refresh');
+    const csvBtn = document.getElementById('csv');
+
+    function setStatus(text){ statusEl.textContent = text; }
+
+    async function fetchBranches(){
+      setStatus('Fetching branches...');
+      refreshBtn.disabled = true; csvBtn.disabled = true;
+      try{
+        const r = await fetch(`${apiBase}/branches`);
+        if(!r.ok) throw new Error(`GitHub API returned ${r.status}`);
+        const branches = await r.json();
+
+        // For each branch get the commit details
+        const details = await Promise.all(branches.map(async b => {
+          try{
+            const cr = await fetch(b.commit.url);
+            if(!cr.ok) return {branch: b.name, error: `commit fetch ${cr.status}`};
+            const c = await cr.json();
+            return {
+              branch: b.name,
+              sha: b.commit.sha,
+              message: (c.commit && c.commit.message) || '',
+              author: (c.commit && c.commit.author && c.commit.author.name) || (c.author && c.author.login) || '',
+              date: (c.commit && c.commit.author && c.commit.author.date) || '',
+              html_url: c.html_url || `https://github.com/${owner}/${repo}/commit/${b.commit.sha}`
+            };
+          }catch(e){
+            return {branch: b.name, error: e.message};
+          }
+        }));
+
+        renderTable(details);
+        setStatus(`Loaded ${details.length} branches`);
+        csvBtn.disabled = false;
+      }catch(err){
+        setStatus('Error: ' + err.message);
+        tbody.innerHTML = '<tr><td colspan="5">Could not load branches. Check network or rate limits.</td></tr>';
+      } finally{
+        refreshBtn.disabled = false;
+      }
+    }
+
+    function renderTable(rows){
+      tbody.innerHTML = '';
+      rows.forEach(r => {
+        const tr = document.createElement('tr');
+        if(r.error){
+          tr.innerHTML = `<td>${escapeHtml(r.branch)}</td><td colspan="4">Error: ${escapeHtml(r.error)}</td>`;
+        } else {
+          tr.innerHTML = `
+            <td><a href="https://github.com/${owner}/${repo}/tree/${encodeURIComponent(r.branch)}" target="_blank">${escapeHtml(r.branch)}</a></td>
+            <td><code>${escapeHtml(r.sha)}</code><div style="color:#555">${escapeHtml(r.message.split('\n')[0])}</div></td>
+            <td>${escapeHtml(r.author)}</td>
+            <td>${escapeHtml(formatDate(r.date))}</td>
+            <td><a href="${r.html_url}" target="_blank">view</a></td>
+          `;
+        }
+        tbody.appendChild(tr);
+      });
+    }
+
+    function escapeHtml(s){ return String(s||'').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":"&#39;"})[c]); }
+    function formatDate(d){ if(!d) return ''; try{ return new Date(d).toLocaleString(); }catch(e){ return d; } }
+
+    function rowsToCsv(){
+      const rows = Array.from(tbody.querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim()));
+      return rows.map(r => r.map(cell => '"'+String(cell).replace(/"/g,'""')+'"').join(',')).join('\n');
+    }
+
+    csvBtn.addEventListener('click', () => {
+      const csv = rowsToCsv();
+      const blob = new Blob([csv], {type: 'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `${repo}-branches.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    });
+
+    refreshBtn.addEventListener('click', fetchBranches);
+
+    // Auto-run on load
+    fetchBranches();
+  </script>
 </body>
 </html>
